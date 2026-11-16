@@ -1,0 +1,127 @@
+// DL3004 Movie Rental DW - physical model (PostgreSQL, schema project_dw)
+// Paste into dbdiagram.io. Relationships only go from fact tables to dimensions.
+
+Table dim_date {
+  date_key int [pk, note: 'Surrogate key in YYYYMMDD format']
+  full_date date [note: 'The actual calendar date']
+  day_of_month int [note: 'Day number in the month']
+  day_name varchar(10) [note: 'Name of the weekday']
+  day_of_week int [note: 'Weekday number (1 = Monday)']
+  is_weekend char(1) [note: 'Y if Saturday or Sunday, else N']
+  week_of_year int [note: 'Week number in the year']
+  month_number int [note: 'Month number']
+  month_name varchar(10) [note: 'Month name']
+  year_month char(7) [note: 'Year and month together, for monthly reports']
+  quarter int [note: 'Quarter of the year']
+  year int [note: 'Calendar year']
+}
+
+Table dim_customer {
+  customer_key int [pk, note: 'Surrogate key']
+  customer_id int [note: 'Natural key from the source system']
+  first_name varchar(45) [note: 'Customer first name']
+  last_name varchar(45) [note: 'Customer last name']
+  full_name varchar(91) [note: 'First and last name together']
+  email varchar(50) [note: 'Customer email']
+  address varchar(50) [note: 'Street address']
+  district varchar(20) [note: 'District / state']
+  city varchar(50) [note: 'City name']
+  country varchar(50) [note: 'Country name']
+  postal_code varchar(10) [note: 'Postal code']
+  home_store_name varchar(50) [note: 'Name of the store the customer is registered with']
+  is_active char(1) [note: 'Y if the customer account is active']
+  effective_from date [note: 'Date this version became valid (SCD2)']
+  effective_to date [note: 'Date this version stopped being valid (SCD2)']
+  is_current char(1) [note: 'Y for the latest version of the customer']
+}
+
+Table dim_film {
+  film_key int [pk, note: 'Surrogate key']
+  film_id int [note: 'Natural key from the source system']
+  title varchar(255) [note: 'Film title']
+  category_name varchar(25) [note: 'Film genre']
+  rating varchar(5) [note: 'Age rating']
+  language varchar(20) [note: 'Film language']
+  release_year int [note: 'Year the film was released']
+  length_minutes int [note: 'Running time in minutes']
+  length_band varchar(20) [note: 'Grouped running time']
+  rental_rate decimal(4,2) [note: 'Price to rent the film']
+  rental_rate_band varchar(10) [note: 'Grouped rental price']
+  allowed_rental_days int [note: 'Days a customer may keep the film']
+  replacement_cost decimal(5,2) [note: 'Cost to replace a lost copy']
+  special_features varchar(100) [note: 'Extras on the disc']
+}
+
+Table dim_store {
+  store_key int [pk, note: 'Surrogate key']
+  store_id int [note: 'Natural key from the source system']
+  store_address varchar(50) [note: 'Street address of the store']
+  city varchar(50) [note: 'City of the store']
+  country varchar(50) [note: 'Country of the store']
+  manager_name varchar(91) [note: 'Name of the store manager']
+}
+
+Table dim_staff {
+  staff_key int [pk, note: 'Surrogate key']
+  staff_id int [note: 'Natural key from the source system']
+  full_name varchar(91) [note: 'Staff member name']
+  email varchar(50) [note: 'Work email']
+  home_store_name varchar(50) [note: 'Name of the store the staff member works at']
+  is_active char(1) [note: 'Y if still working']
+}
+
+Table dim_actor {
+  actor_key int [pk, note: 'Surrogate key']
+  actor_id int [note: 'Natural key from the source system']
+  first_name varchar(45) [note: 'Actor first name']
+  last_name varchar(45) [note: 'Actor last name']
+  full_name varchar(91) [note: 'First and last name together']
+}
+
+Table fact_rental {
+  rental_id int [pk, note: 'Degenerate dimension: rental number from the source']
+  rental_date_key int [ref: > dim_date.date_key, note: 'Date the film was rented']
+  return_date_key int [ref: > dim_date.date_key, note: 'Date the film came back (-1 if not returned yet)']
+  customer_key int [ref: > dim_customer.customer_key, note: 'Customer who rented']
+  film_key int [ref: > dim_film.film_key, note: 'Film that was rented']
+  store_key int [ref: > dim_store.store_key, note: 'Store the copy belongs to']
+  staff_key int [ref: > dim_staff.staff_key, note: 'Staff member who handled the rental']
+  rental_count int [note: 'Always 1, so rentals can be summed']
+  days_rented int [note: 'How many days the customer kept the film']
+  allowed_days int [note: 'Days the customer was allowed to keep it (non-additive)']
+  days_late int [note: 'Days kept past the allowed period (0 if on time, NULL if not returned)']
+  is_returned int [note: '1 if returned, 0 if still out']
+  is_late int [note: '1 if returned late, else 0']
+}
+
+Table fact_payment {
+  payment_id int [pk, note: 'Degenerate dimension: payment number from the source']
+  rental_id int [note: 'Rental the payment was for (-1 if none)']
+  payment_date_key int [ref: > dim_date.date_key, note: 'Date of the payment']
+  customer_key int [ref: > dim_customer.customer_key, note: 'Customer who paid']
+  film_key int [ref: > dim_film.film_key, note: 'Film the payment was for (-1 if unknown)']
+  store_key int [ref: > dim_store.store_key, note: 'Store that received the payment']
+  staff_key int [ref: > dim_staff.staff_key, note: 'Staff member who took the payment']
+  amount decimal(5,2) [note: 'Amount paid']
+}
+
+Table fact_inventory_daily {
+  snapshot_date_key int [ref: > dim_date.date_key, note: 'Day of the snapshot']
+  film_key int [ref: > dim_film.film_key, note: 'Film']
+  store_key int [ref: > dim_store.store_key, note: 'Store']
+  copies_owned int [note: 'Copies of this film the store owns']
+  copies_rented_out int [note: 'Copies out with customers at end of day']
+  copies_available int [note: 'Copies on the shelf']
+  utilization_pct decimal(5,2) [note: 'Share of copies rented out (non-additive)']
+  indexes {
+    (snapshot_date_key, film_key, store_key) [pk]
+  }
+}
+
+Table fact_film_cast {
+  film_key int [ref: > dim_film.film_key, note: 'Film']
+  actor_key int [ref: > dim_actor.actor_key, note: 'Actor']
+  indexes {
+    (film_key, actor_key) [pk]
+  }
+}
