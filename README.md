@@ -61,7 +61,8 @@ Full details are in `01_Project_Documentation`.
     load_staging.py         Loads the CSV files into project_staging.raw_<table>
     staging.sql             Cleans raw_ tables into typed project_staging.stg_<table>
     dimensions.sql          Dimension loads (to be added)
-    facts.sql               Fact loads (to be added)
+    facts.sql               Fact loads 
+    checks.sql              Data quality check on fact tables
 04_Data_Warehouse/
     warehouse.sql           Warehouse tables in project_dw (to be added)
 05_Analytics/
