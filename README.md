@@ -55,6 +55,7 @@ Full details are in `01_Project_Documentation`.
     Data_Dictionary.xlsx                                       Tables, columns, rules
     Data_Cleaning_Report.pdf                                   Phase 2 cleaning results
     Data_Quality_Report.pdf                                    Phase 2 quality check results
+    Business_Insights_Report.pdf                               Phase 3 findings and recommendations
 02_Data/
     raw_data/               Sakila tables exported as CSV (source files)
     cleaned_data/           Cleaned staging tables exported as CSV (stg_<table>.csv)
@@ -69,8 +70,9 @@ Full details are in `01_Project_Documentation`.
     warehouse.sql           Creates project_dw (6 dimensions, 4 facts, keys, indexes)
                             and the project_reporting schema
 05_Analytics/
-    OLAP.sql                Analytical and OLAP queries, ROLLUP and CUBE (Phase 3)
-    Views.sql               Reporting views in project_reporting (Phase 3)
+    Views.sql               Reporting views in project_reporting (run this first)
+    Analytical_Queries.sql  Answers to the 14 business questions
+    OLAP.sql                OLAP queries with ROLLUP and CUBE
 06_Dashboard/
     PowerBI.pbix            Power BI dashboard (Phase 3)
 README.md
@@ -86,7 +88,7 @@ PostgreSQL, pgAdmin, Python (Pandas, SQLAlchemy), Power BI Desktop, dbdiagram.io
 |---|---|---|---|
 | 1. Design | 1-3 | Business analysis, requirements, dimensional model, data dictionary | Done |
 | 2. Implementation | 4-6 | PostgreSQL schemas, staging and cleaning, ETL, data quality checks | Done |
-| 3. Analytics and BI | 7-8 | Analytical and OLAP SQL, reporting views, indexing, Power BI dashboard | Planned |
+| 3. Analytics and BI | 7-8 | Analytical and OLAP SQL, reporting views, indexing, Power BI dashboard | In progress (views, analytical SQL and insights report done) |
 
 ## How to run
 
@@ -118,7 +120,12 @@ Requirements: PostgreSQL with pgAdmin, Python 3, and
    psql -U postgres -h localhost -d sakila_dw -f 03_ETL/checks.sql
    ```
    `checks.sql` prints the data quality results; every row should say PASS.
-6. **Create the reporting views** with `05_Analytics/Views.sql` (Phase 3).
+6. **Create the reporting views** with `05_Analytics/Views.sql` (works in the Query Tool too), then run
+   `05_Analytics/Analytical_Queries.sql` to answer the business questions:
+   ```
+   psql -U postgres -h localhost -d sakila_dw -f 05_Analytics/Views.sql
+   psql -U postgres -h localhost -d sakila_dw -f 05_Analytics/Analytical_Queries.sql
+   ```
 7. **Open the dashboard** `06_Dashboard/PowerBI.pbix` and point it at your database (Phase 3).
 
 ## Phase 2 results
@@ -133,5 +140,31 @@ Requirements: PostgreSQL with pgAdmin, Python 3, and
 | fact_film_cast | 5,462 |
 
 All 31 checks in `checks.sql` pass (completeness, uniqueness, domain validity, integrity, accuracy, SCD Type 2). Details are in `01_Project_Documentation/Data_Quality_Report.pdf`.
+
+## Reporting views (Phase 3)
+
+All three views are in the `project_reporting` schema. Ratio columns (late %, utilization %) are included, but when you
+combine rows (several months, stores or films) rebuild the ratio from the count columns, for example
+`SUM(late_rentals) / SUM(returned_rentals)`, rather than adding or averaging the percentages.
+
+**vw_monthly_sales** - one row per month per store (10 rows)
+year_month, year, month_number, month_label, store_id, store_name, rentals, returned_rentals, late_rentals, late_pct,
+weekend_rentals, weekday_rentals, active_customers, payments, revenue, avg_payment, prev_active_month,
+prev_month_revenue, revenue_growth_pct
+
+**vw_product_performance** - one row per film per store (1,563 rows; films with no copies have store_name 'Not stocked')
+film_id, title, category_name, rating, length_band, rental_rate, rental_rate_band, actor_count, store_id, store_name,
+copies_owned, rentals, returned_rentals, late_rentals, late_pct, avg_days_kept, revenue, revenue_per_copy,
+days_tracked, sold_out_days, sold_out_pct, total_copies_rented_out, total_copies_owned, utilization_pct,
+stock_status (Balanced / Understocked / Overstocked / Not stocked)
+
+**vw_customer_analysis** - one row per customer, current details (599 rows)
+customer_id, full_name, email, city, country, home_store_name, is_active, rentals, returned_rentals, late_rentals,
+first_rental_date, last_rental_date, payments, total_spent, favourite_category, late_pct, avg_payment, spend_rank,
+value_segment (High / Medium / Low, by total spend)
+
+Totals that reconcile with the warehouse: rentals 16,044 and revenue 67,416.51 in each view. For the total number of
+customers use `vw_customer_analysis` (599); `active_customers` in vw_monthly_sales counts customers per month and store,
+so it cannot be added up.
 
 All scripts are safe to re-run: they drop and rebuild their tables.
