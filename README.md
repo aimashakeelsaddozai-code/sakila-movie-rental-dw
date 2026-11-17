@@ -54,17 +54,20 @@ Full details are in `01_Project_Documentation`.
     Star_Schema_Design.pdf, Star_Schema.png, Star_Schema.dbml   Phase 1 design
     Data_Dictionary.xlsx                                       Tables, columns, rules
     Data_Cleaning_Report.pdf                                   Phase 2 cleaning results
+    Data_Quality_Report.pdf                                    Phase 2 quality check results
 02_Data/
     raw_data/               Sakila tables exported as CSV (source files)
-    cleaned_data/           Cleaned output (if exported)
+    cleaned_data/           Cleaned staging tables exported as CSV (stg_<table>.csv)
 03_ETL/
     load_staging.py         Loads the CSV files into project_staging.raw_<table>
     staging.sql             Cleans raw_ tables into typed project_staging.stg_<table>
-    dimensions.sql          Dimension loads (to be added)
-    facts.sql               Fact loads 
-    checks.sql              Data quality check on fact tables
+    export_cleaned.py       Exports the stg_ tables to 02_Data/cleaned_data (optional)
+    dimensions.sql          Loads the 6 dimensions (Unknown rows, dim_date, SCD2 baseline)
+    facts.sql               SCD2 customer changes and the 4 fact table loads
+    checks.sql              Data quality and reconciliation checks (31 checks)
 04_Data_Warehouse/
-    warehouse.sql           Warehouse tables in project_dw (to be added)
+    warehouse.sql           Creates project_dw (6 dimensions, 4 facts, keys, indexes)
+                            and the project_reporting schema
 05_Analytics/
     OLAP.sql                Analytical and OLAP queries, ROLLUP and CUBE (Phase 3)
     Views.sql               Reporting views in project_reporting (Phase 3)
@@ -82,7 +85,7 @@ PostgreSQL, pgAdmin, Python (Pandas, SQLAlchemy), Power BI Desktop, dbdiagram.io
 | Phase | Weeks | Content | Status |
 |---|---|---|---|
 | 1. Design | 1-3 | Business analysis, requirements, dimensional model, data dictionary | Done |
-| 2. Implementation | 4-6 | PostgreSQL schemas, staging and cleaning, ETL, data quality checks | In progress (staging and cleaning done) |
+| 2. Implementation | 4-6 | PostgreSQL schemas, staging and cleaning, ETL, data quality checks | Done |
 | 3. Analytics and BI | 7-8 | Analytical and OLAP SQL, reporting views, indexing, Power BI dashboard | Planned |
 
 ## How to run
@@ -103,8 +106,32 @@ Requirements: PostgreSQL with pgAdmin, Python 3, and
    psql -U postgres -h localhost -d sakila_dw -f 03_ETL/staging.sql
    ```
    This builds the cleaned `project_staging.stg_<table>` tables and prints before/after row counts.
-4. **Create the warehouse** with `04_Data_Warehouse/warehouse.sql`, then load it with `03_ETL/dimensions.sql` followed by `03_ETL/facts.sql` (to be added).
-5. **Create the reporting views** with `05_Analytics/Views.sql` (Phase 3).
-6. **Open the dashboard** `06_Dashboard/PowerBI.pbix` and point it at your database (Phase 3).
+4. **(Optional) Export the cleaned data** to `02_Data/cleaned_data`:
+   ```
+   python 03_ETL/export_cleaned.py
+   ```
+5. **Create the warehouse, load it and check it.** Run these four scripts in order, with psql or the PSQL Tool:
+   ```
+   psql -U postgres -h localhost -d sakila_dw -f 04_Data_Warehouse/warehouse.sql
+   psql -U postgres -h localhost -d sakila_dw -f 03_ETL/dimensions.sql
+   psql -U postgres -h localhost -d sakila_dw -f 03_ETL/facts.sql
+   psql -U postgres -h localhost -d sakila_dw -f 03_ETL/checks.sql
+   ```
+   `checks.sql` prints the data quality results; every row should say PASS.
+6. **Create the reporting views** with `05_Analytics/Views.sql` (Phase 3).
+7. **Open the dashboard** `06_Dashboard/PowerBI.pbix` and point it at your database (Phase 3).
+
+## Phase 2 results
+
+| Table | Rows |
+|---|---|
+| dim_date / dim_customer / dim_film | 731 / 603 / 1,001 |
+| dim_store / dim_staff / dim_actor | 3 / 3 / 201 |
+| fact_rental | 16,044 |
+| fact_payment | 16,049 (total 67,416.51, matches the source) |
+| fact_inventory_daily | 136,890 (90 days x 1,521 film-store pairs) |
+| fact_film_cast | 5,462 |
+
+All 31 checks in `checks.sql` pass (completeness, uniqueness, domain validity, integrity, accuracy, SCD Type 2). Details are in `01_Project_Documentation/Data_Quality_Report.pdf`.
 
 All scripts are safe to re-run: they drop and rebuild their tables.

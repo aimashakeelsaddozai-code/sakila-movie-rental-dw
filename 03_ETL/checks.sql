@@ -13,7 +13,7 @@
 --   6. Accuracy, Financial Reconciliation & SCD2 Historical Join Verification
 --
 -- Run from repo root (after warehouse.sql, dimensions.sql, and facts.sql):
---   psql -U postgres -h localhost -d sakila_dw -f 03_ETL/quality_checks.sql
+--   psql -U postgres -h localhost -d sakila_dw -f 03_ETL/checks.sql
 -- ============================================================================
 
 \set ON_ERROR_STOP on

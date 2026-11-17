@@ -18,6 +18,9 @@
 SET client_encoding = 'UTF8';
 
 CREATE SCHEMA IF NOT EXISTS project_dw;
+-- Reporting layer: the analysis views (vw_monthly_sales, vw_customer_analysis,
+-- vw_product_performance) are added here in Phase 3 (05_Analytics/Views.sql).
+CREATE SCHEMA IF NOT EXISTS project_reporting;
 SET search_path = project_dw, public;
 
 BEGIN;
