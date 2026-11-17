@@ -47,7 +47,8 @@ WHERE customer_key <> -1
 
 -- ----------------------------------------------------------------------------
 -- 2. Customer SCD Type 2 Merge (Simulated History per BRD Section 11)
---    - Customer 1 (Mary Smith): Moved address on 2005-07-01
+--    - Customer 1 (Mary Smith): Moved to Lethbridge, Canada on 2005-07-01
+--      (new address, district, city, country and postal code)
 --    - Customer 2 (Patricia Johnson): Transferred home store on 2005-07-15
 --    - Customer 3 (Linda Williams): Account deactivated on 2005-08-01
 -- ----------------------------------------------------------------------------
@@ -58,11 +59,11 @@ SELECT
     cu.last_name,
     cu.first_name || ' ' || cu.last_name AS full_name,
     cu.email,
-    CASE WHEN cu.customer_id = 1 THEN '742 Evergreen Terrace' ELSE a.address END AS address,
-    a.district,
-    ci.city,
-    co.country,
-    CASE WHEN cu.customer_id = 1 THEN '90210' ELSE a.postal_code END AS postal_code,
+    CASE WHEN cu.customer_id = 1 THEN '1520 Scenic Drive' ELSE a.address END AS address,
+    CASE WHEN cu.customer_id = 1 THEN 'Alberta' ELSE a.district END AS district,
+    CASE WHEN cu.customer_id = 1 THEN 'Lethbridge' ELSE ci.city END AS city,
+    CASE WHEN cu.customer_id = 1 THEN 'Canada' ELSE co.country END AS country,
+    CASE WHEN cu.customer_id = 1 THEN 'T1K 3M4' ELSE a.postal_code END AS postal_code,
     CASE WHEN cu.customer_id = 2 THEN 'Store 2 - Woodridge'
          ELSE 'Store ' || cu.store_id || ' - ' || sto_ci.city END AS home_store_name,
     CASE WHEN cu.customer_id = 3 THEN 'N'
