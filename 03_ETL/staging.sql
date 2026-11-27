@@ -1,57 +1,30 @@
--- ============================================================================
--- DL3004 Movie Rental DW - Step 2 of the ETL pipeline: staging cleaning
--- Schema : project_staging (PostgreSQL)
--- Input  : project_staging.raw_<table>  (text copies of the CSV files,
---          created by 03_ETL/load_staging.py)
--- Output : project_staging.stg_<table>  (clean, typed tables)
---
--- Cleaning rules (Business Requirements Document, section 7):
---   1. Remove duplicates by natural key (keep the newest copy)
---   2. Handle NULLs   : blank postal code / district -> 'Unknown',
---                       payment.rental_id NULL -> -1,
---                       return_date NULL is kept (NULL = not returned yet)
---   3. Standardise    : names and titles -> proper case, text trimmed,
---                       emails -> lower case
---   4. Convert types  : text -> INT, DATE, TIMESTAMP, NUMERIC, BOOLEAN;
---                       special_features -> comma-separated text
---
--- Run from the repo root:
---   psql -U postgres -h localhost -d <your_database> -f 03_ETL/staging.sql
--- Safe to re-run: every stg_ table is dropped and rebuilt.
--- ============================================================================
-
+--staging.sql - cleans the raw_ tables into typed stg_ tables (Aima Shakeel)
 \set ON_ERROR_STOP on
 SET client_encoding = 'UTF8';
 
-CREATE SCHEMA IF NOT EXISTS project_staging;
+CREATE SCHEMA IF NOT EXISTS project_staging;  --staging schema, raw_ tables are already here from load_staging.py
 SET search_path = project_staging;
 
-BEGIN;
+BEGIN;  --all or nothing
 
-DROP TABLE IF EXISTS stg_payment, stg_rental, stg_inventory, stg_film_actor,
+DROP TABLE IF EXISTS stg_payment, stg_rental, stg_inventory, stg_film_actor,  --start fresh every run
                      stg_film_category, stg_film, stg_customer, stg_staff,
                      stg_store, stg_address, stg_city, stg_country,
                      stg_language, stg_category, stg_actor;
 
--- ----------------------------------------------------------------------------
--- Lookup tables
--- ----------------------------------------------------------------------------
-
--- ACTOR: names to proper case
 CREATE TABLE stg_actor (
     actor_id   INT PRIMARY KEY,
     first_name VARCHAR(45) NOT NULL,
     last_name  VARCHAR(45) NOT NULL
 );
 INSERT INTO stg_actor
-SELECT DISTINCT ON (actor_id::INT)
+SELECT DISTINCT ON (actor_id::INT)  --one row per actor, newest version wins if an id repeats
        actor_id::INT,
-       INITCAP(TRIM(first_name)),
+       INITCAP(TRIM(first_name)),  --MARY -> Mary
        INITCAP(TRIM(last_name))
 FROM raw_actor
-ORDER BY actor_id::INT, last_update::TIMESTAMP DESC;
+ORDER BY actor_id::INT, last_update::TIMESTAMP DESC;  --newest row first so distinct on keeps it
 
--- CATEGORY
 CREATE TABLE stg_category (
     category_id INT PRIMARY KEY,
     name        VARCHAR(25) NOT NULL
@@ -63,7 +36,6 @@ SELECT DISTINCT ON (category_id::INT)
 FROM raw_category
 ORDER BY category_id::INT, last_update::TIMESTAMP DESC;
 
--- COUNTRY
 CREATE TABLE stg_country (
     country_id INT PRIMARY KEY,
     country    VARCHAR(50) NOT NULL
@@ -75,7 +47,6 @@ SELECT DISTINCT ON (country_id::INT)
 FROM raw_country
 ORDER BY country_id::INT, last_update::TIMESTAMP DESC;
 
--- CITY
 CREATE TABLE stg_city (
     city_id    INT PRIMARY KEY,
     city       VARCHAR(50) NOT NULL,
@@ -89,7 +60,6 @@ SELECT DISTINCT ON (city_id::INT)
 FROM raw_city
 ORDER BY city_id::INT, last_update::TIMESTAMP DESC;
 
--- LANGUAGE: the source column is CHAR(20), so names carry trailing spaces
 CREATE TABLE stg_language (
     language_id INT PRIMARY KEY,
     name        VARCHAR(20) NOT NULL
@@ -101,8 +71,6 @@ SELECT DISTINCT ON (language_id::INT)
 FROM raw_language
 ORDER BY language_id::INT, last_update::TIMESTAMP DESC;
 
--- ADDRESS: blank postal code / district -> 'Unknown'. address2 and phone are
--- not used by the warehouse and are left out.
 CREATE TABLE stg_address (
     address_id  INT PRIMARY KEY,
     address     VARCHAR(50) NOT NULL,
@@ -114,15 +82,11 @@ INSERT INTO stg_address
 SELECT DISTINCT ON (address_id::INT)
        address_id::INT,
        TRIM(address),
-       COALESCE(NULLIF(TRIM(district), ''), 'Unknown'),
+       COALESCE(NULLIF(TRIM(district), ''), 'Unknown'),  --blank district becomes Unknown
        city_id::INT,
-       COALESCE(NULLIF(TRIM(postal_code), ''), 'Unknown')
+       COALESCE(NULLIF(TRIM(postal_code), ''), 'Unknown')  --blank postal code becomes Unknown
 FROM raw_address
 ORDER BY address_id::INT, last_update::TIMESTAMP DESC;
-
--- ----------------------------------------------------------------------------
--- Stores, staff, customers
--- ----------------------------------------------------------------------------
 
 CREATE TABLE stg_store (
     store_id         INT PRIMARY KEY,
@@ -137,7 +101,6 @@ SELECT DISTINCT ON (store_id::INT)
 FROM raw_store
 ORDER BY store_id::INT, last_update::TIMESTAMP DESC;
 
--- STAFF: password and picture were already left out by the loader
 CREATE TABLE stg_staff (
     staff_id   INT PRIMARY KEY,
     first_name VARCHAR(45) NOT NULL,
@@ -153,9 +116,9 @@ SELECT DISTINCT ON (staff_id::INT)
        INITCAP(TRIM(first_name)),
        INITCAP(TRIM(last_name)),
        address_id::INT,
-       LOWER(TRIM(email)),
+       LOWER(TRIM(email)),  --emails in lower case
        store_id::INT,
-       (LOWER(TRIM(active)) IN ('t', 'true', '1'))
+       (LOWER(TRIM(active)) IN ('t', 'true', '1'))  --text flag to true/false
 FROM raw_staff
 ORDER BY staff_id::INT, last_update::TIMESTAMP DESC;
 
@@ -175,19 +138,13 @@ SELECT DISTINCT ON (customer_id::INT)
        store_id::INT,
        INITCAP(TRIM(first_name)),
        INITCAP(TRIM(last_name)),
-       LOWER(TRIM(email)),
+       LOWER(TRIM(email)),  --emails in lower case
        address_id::INT,
        active::INT,
-       create_date::DATE
+       create_date::DATE  --text to date
 FROM raw_customer
 ORDER BY customer_id::INT, last_update::TIMESTAMP DESC;
 
--- ----------------------------------------------------------------------------
--- Films
--- ----------------------------------------------------------------------------
-
--- FILM: special_features arrives as a PostgreSQL array literal text,
---   {"Deleted Scenes","Behind the Scenes"}  ->  Deleted Scenes,Behind the Scenes
 CREATE TABLE stg_film (
     film_id          INT PRIMARY KEY,
     title            VARCHAR(255) NOT NULL,
@@ -203,15 +160,15 @@ CREATE TABLE stg_film (
 INSERT INTO stg_film
 SELECT DISTINCT ON (film_id::INT)
        film_id::INT,
-       INITCAP(TRIM(title)),
+       INITCAP(TRIM(title)),  --titles were all caps
        release_year::INT,
        language_id::INT,
        rental_duration::INT,
-       rental_rate::NUMERIC(4,2),
+       rental_rate::NUMERIC(4,2),  --money as numeric
        length::INT,
        replacement_cost::NUMERIC(5,2),
        TRIM(rating),
-       NULLIF(REGEXP_REPLACE(TRIM(special_features), '[{}"]', '', 'g'), '')
+       NULLIF(REGEXP_REPLACE(TRIM(special_features), '[{}"]', '', 'g'), '')  --{"Deleted Scenes"} -> Deleted Scenes
 FROM raw_film
 ORDER BY film_id::INT, last_update::TIMESTAMP DESC;
 
@@ -221,7 +178,7 @@ CREATE TABLE stg_film_category (
     PRIMARY KEY (film_id, category_id)
 );
 INSERT INTO stg_film_category
-SELECT DISTINCT ON (film_id::INT, category_id::INT)
+SELECT DISTINCT ON (film_id::INT, category_id::INT)  --composite key, one row per film/category pair
        film_id::INT,
        category_id::INT
 FROM raw_film_category
@@ -233,15 +190,11 @@ CREATE TABLE stg_film_actor (
     PRIMARY KEY (actor_id, film_id)
 );
 INSERT INTO stg_film_actor
-SELECT DISTINCT ON (actor_id::INT, film_id::INT)
+SELECT DISTINCT ON (actor_id::INT, film_id::INT)  --one row per actor/film pair
        actor_id::INT,
        film_id::INT
 FROM raw_film_actor
 ORDER BY actor_id::INT, film_id::INT, last_update::TIMESTAMP DESC;
-
--- ----------------------------------------------------------------------------
--- Inventory, rentals, payments
--- ----------------------------------------------------------------------------
 
 CREATE TABLE stg_inventory (
     inventory_id INT PRIMARY KEY,
@@ -256,14 +209,12 @@ SELECT DISTINCT ON (inventory_id::INT)
 FROM raw_inventory
 ORDER BY inventory_id::INT, last_update::TIMESTAMP DESC;
 
--- RENTAL: return_date stays NULL when the film has not come back yet. The
--- warehouse load turns that into return_date_key = -1 (see Data Dictionary).
 CREATE TABLE stg_rental (
     rental_id    INT PRIMARY KEY,
     rental_date  TIMESTAMP NOT NULL,
     inventory_id INT NOT NULL,
     customer_id  INT NOT NULL,
-    return_date  TIMESTAMP,
+    return_date  TIMESTAMP,  --null means the film was never returned, kept on purpose
     staff_id     INT NOT NULL
 );
 INSERT INTO stg_rental
@@ -272,12 +223,11 @@ SELECT DISTINCT ON (rental_id::INT)
        rental_date::TIMESTAMP,
        inventory_id::INT,
        customer_id::INT,
-       return_date::TIMESTAMP,
+       return_date::TIMESTAMP,  --null stays null
        staff_id::INT
 FROM raw_rental
 ORDER BY rental_id::INT, last_update::TIMESTAMP DESC;
 
--- PAYMENT: a payment without a rental gets rental_id = -1
 CREATE TABLE stg_payment (
     payment_id   INT PRIMARY KEY,
     customer_id  INT NOT NULL,
@@ -291,19 +241,15 @@ SELECT DISTINCT ON (payment_id::INT)
        payment_id::INT,
        customer_id::INT,
        staff_id::INT,
-       COALESCE(rental_id::INT, -1),
+       COALESCE(rental_id::INT, -1),  --no rental becomes -1 (doesnt happen in our data)
        amount::NUMERIC(5,2),
        payment_date::TIMESTAMP
 FROM raw_payment
 ORDER BY payment_id::INT, payment_date::TIMESTAMP DESC;
 
-COMMIT;
+COMMIT;  --save everything
 
--- ============================================================================
--- Before / after row counts (for the Data Cleaning Report)
--- duplicates_removed = rows_before - rows_after
--- ============================================================================
-SELECT table_name, rows_before, rows_after, rows_before - rows_after AS duplicates_removed
+SELECT table_name, rows_before, rows_after, rows_before - rows_after AS duplicates_removed  --before vs after row counts, should be equal
 FROM (
     SELECT 'actor' AS table_name, (SELECT COUNT(*) FROM raw_actor) AS rows_before, (SELECT COUNT(*) FROM stg_actor) AS rows_after UNION ALL
     SELECT 'address',       (SELECT COUNT(*) FROM raw_address),       (SELECT COUNT(*) FROM stg_address)       UNION ALL

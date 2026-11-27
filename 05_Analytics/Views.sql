@@ -1,48 +1,12 @@
--- ============================================================================
--- DL3004 Movie Rental DW - Phase 3: Reporting views
--- Schema : project_reporting (PostgreSQL)
--- Author : Zahra Saeed (Roll No: 24L-2512)
---
--- Three views that sit on top of the star schema in project_dw. The Power BI
--- dashboard and the analysis reports read from these views, so nobody has to
--- rewrite the joins.
---
---   vw_monthly_sales        one row per month per store     (Q1, Q9 + dashboard KPIs and trend)
---   vw_product_performance  one row per film per store      (Q2, Q3, Q6, Q7, Q8, Q11)
---   vw_customer_analysis    one row per customer            (Q4, Q5, Q14)
---
--- Ratios (late %, utilization %) are given, but so are the counts behind them.
--- When you add rows together (for example several stores or months in Power BI),
--- rebuild the ratio from the counts, for example SUM(late_rentals) / SUM(returned_rentals),
--- instead of adding or averaging the percentages.
---
--- Run after the warehouse is loaded (warehouse.sql, dimensions.sql, facts.sql).
--- Works in pgAdmin's Query Tool or with psql:
---   psql -U postgres -h localhost -d sakila_dw -f 05_Analytics/Views.sql
--- Safe to re-run: every view is dropped and created again.
--- ============================================================================
+--Views.sql - the 3 reporting views used by the dashboard and the analysis (Zahra Saeed)
+CREATE SCHEMA IF NOT EXISTS project_reporting;  --reporting layer
 
-CREATE SCHEMA IF NOT EXISTS project_reporting;
-
-DROP VIEW IF EXISTS project_reporting.vw_monthly_sales;
+DROP VIEW IF EXISTS project_reporting.vw_monthly_sales;  --drop first so the script can be re-run
 DROP VIEW IF EXISTS project_reporting.vw_product_performance;
 DROP VIEW IF EXISTS project_reporting.vw_customer_analysis;
 
-
--- ----------------------------------------------------------------------------
--- 1. vw_monthly_sales  (grain: one month at one store)
---
--- Rentals come from fact_rental and revenue from fact_payment. The two fact
--- tables are summarised separately by month and store and then joined on those
--- shared (conformed) dimensions. This is a drill-across: the fact tables are
--- never joined to each other directly.
---
--- Revenue growth compares each month with the previous month that had activity
--- at the same store. Sakila has no data between September 2005 and January 2006,
--- so February 2006 is compared with August 2005 (prev_active_month says which).
--- ----------------------------------------------------------------------------
-CREATE VIEW project_reporting.vw_monthly_sales AS
-WITH rentals AS (
+CREATE VIEW project_reporting.vw_monthly_sales AS  --one row per month per store
+WITH rentals AS (  --rentals summed up by month and store
     SELECT d.year_month,
            s.store_id,
            SUM(r.rental_count)                                          AS rentals,
@@ -50,14 +14,14 @@ WITH rentals AS (
            SUM(r.is_late)                                               AS late_rentals,
            SUM(CASE WHEN d.is_weekend = 'Y' THEN r.rental_count ELSE 0 END) AS weekend_rentals,
            SUM(CASE WHEN d.is_weekend = 'N' THEN r.rental_count ELSE 0 END) AS weekday_rentals,
-           COUNT(DISTINCT c.customer_id)                                AS active_customers
+           COUNT(DISTINCT c.customer_id)                                AS active_customers  --distinct customer_id so scd2 versions count once
     FROM project_dw.fact_rental r
     JOIN project_dw.dim_date d     ON r.rental_date_key = d.date_key
     JOIN project_dw.dim_store s    ON r.store_key = s.store_key
     JOIN project_dw.dim_customer c ON r.customer_key = c.customer_key
     GROUP BY d.year_month, s.store_id
 ),
-payments AS (
+payments AS (  --revenue summed up separately, then joined (drill across)
     SELECT d.year_month,
            s.store_id,
            COUNT(*)      AS payments,
@@ -79,7 +43,7 @@ combined AS (
            COALESCE(p.payments, 0)              AS payments,
            COALESCE(p.revenue, 0)               AS revenue
     FROM rentals r
-    FULL OUTER JOIN payments p
+    FULL OUTER JOIN payments p  --full join in case a month has rentals but no payments or the other way round
       ON r.year_month = p.year_month AND r.store_id = p.store_id
 )
 SELECT c.year_month,
@@ -91,49 +55,36 @@ SELECT c.year_month,
        c.rentals,
        c.returned_rentals,
        c.late_rentals,
-       ROUND(100.0 * c.late_rentals / NULLIF(c.returned_rentals, 0), 1) AS late_pct,
+       ROUND(100.0 * c.late_rentals / NULLIF(c.returned_rentals, 0), 1) AS late_pct,  --late out of returned, not out of all rentals
        c.weekend_rentals,
        c.weekday_rentals,
        c.active_customers,
        c.payments,
        c.revenue,
        ROUND(c.revenue / NULLIF(c.payments, 0), 2)    AS avg_payment,
-       LAG(c.year_month) OVER w                       AS prev_active_month,
+       LAG(c.year_month) OVER w                       AS prev_active_month,  --previous month that had data at this store
        LAG(c.revenue)    OVER w                       AS prev_month_revenue,
-       ROUND(100.0 * (c.revenue - LAG(c.revenue) OVER w) / NULLIF(LAG(c.revenue) OVER w, 0), 1) AS revenue_growth_pct
+       ROUND(100.0 * (c.revenue - LAG(c.revenue) OVER w) / NULLIF(LAG(c.revenue) OVER w, 0), 1) AS revenue_growth_pct  --growth vs that month
 FROM combined c
 JOIN project_dw.dim_store s ON s.store_id = c.store_id
-WINDOW w AS (PARTITION BY c.store_id ORDER BY c.year_month);
+WINDOW w AS (PARTITION BY c.store_id ORDER BY c.year_month);  --window per store in month order
 
 COMMENT ON VIEW project_reporting.vw_monthly_sales IS
   'One row per month per store: rentals, late returns, weekend/weekday split, active customers, revenue and month-on-month revenue growth.';
 
-
--- ----------------------------------------------------------------------------
--- 2. vw_product_performance  (grain: one film at one store)
---
--- Combines all three film-related facts: rentals (fact_rental), revenue
--- (fact_payment) and stock (fact_inventory_daily). Films that are not stocked
--- at any store appear once, with store_id = NULL and stock_status = 'Not stocked'.
---
--- stock_status rules (based on the 90 tracked days):
---   Understocked : sold out (0 copies on the shelf) on 10% or more of the days
---   Overstocked  : holds 4 copies but fewer than 15% are rented out on average
---   Balanced     : everything else
--- ----------------------------------------------------------------------------
-CREATE VIEW project_reporting.vw_product_performance AS
-WITH stock AS (
+CREATE VIEW project_reporting.vw_product_performance AS  --one row per film per store
+WITH stock AS (  --stock from the daily snapshot
     SELECT film_key,
            store_key,
-           MAX(copies_owned)                                      AS copies_owned,
+           MAX(copies_owned)                                      AS copies_owned,  --copies dont change so max is fine
            COUNT(*)                                               AS days_tracked,
-           SUM(CASE WHEN copies_available = 0 THEN 1 ELSE 0 END)  AS sold_out_days,
+           SUM(CASE WHEN copies_available = 0 THEN 1 ELSE 0 END)  AS sold_out_days,  --days with nothing on the shelf
            SUM(copies_rented_out)                                 AS total_copies_rented_out,
            SUM(copies_owned)                                      AS total_copies_owned
     FROM project_dw.fact_inventory_daily
     GROUP BY film_key, store_key
 ),
-rentals AS (
+rentals AS (  --rentals per film and store
     SELECT film_key,
            store_key,
            SUM(rental_count) AS rentals,
@@ -143,23 +94,22 @@ rentals AS (
     FROM project_dw.fact_rental
     GROUP BY film_key, store_key
 ),
-revenue AS (
+revenue AS (  --revenue per film and store
     SELECT film_key,
            store_key,
            SUM(amount) AS revenue
     FROM project_dw.fact_payment
     GROUP BY film_key, store_key
 ),
-cast_size AS (
+cast_size AS (  --how many actors in each film
     SELECT film_key, COUNT(*) AS actor_count
     FROM project_dw.fact_film_cast
     GROUP BY film_key
 ),
 film_store AS (
-    -- every film-store pair that has stock, plus one row for each film with no stock
-    SELECT film_key, store_key FROM stock
+    SELECT film_key, store_key FROM stock  --every stocked film/store pair
     UNION
-    SELECT f.film_key, NULL::INT
+    SELECT f.film_key, NULL::INT  --plus films with no copies anywhere
     FROM project_dw.dim_film f
     WHERE f.film_key <> -1
       AND NOT EXISTS (SELECT 1 FROM stock st WHERE st.film_key = f.film_key)
@@ -188,11 +138,11 @@ SELECT f.film_id,
        ROUND(100.0 * st.sold_out_days / NULLIF(st.days_tracked, 0), 1) AS sold_out_pct,
        COALESCE(st.total_copies_rented_out, 0)         AS total_copies_rented_out,
        COALESCE(st.total_copies_owned, 0)              AS total_copies_owned,
-       ROUND(100.0 * st.total_copies_rented_out / NULLIF(st.total_copies_owned, 0), 1) AS utilization_pct,
+       ROUND(100.0 * st.total_copies_rented_out / NULLIF(st.total_copies_owned, 0), 1) AS utilization_pct,  --rented out / owned, from the totals not an average of percentages
        CASE
-           WHEN st.film_key IS NULL THEN 'Not stocked'
-           WHEN 100.0 * st.sold_out_days / st.days_tracked >= 10 THEN 'Understocked'
-           WHEN st.copies_owned >= 4
+           WHEN st.film_key IS NULL THEN 'Not stocked'  --labels for the stock questions
+           WHEN 100.0 * st.sold_out_days / st.days_tracked >= 10 THEN 'Understocked'  --sold out on 10% or more of days
+           WHEN st.copies_owned >= 4  --4 copies but hardly rented
             AND 100.0 * st.total_copies_rented_out / st.total_copies_owned < 15 THEN 'Overstocked'
            ELSE 'Balanced'
        END                                             AS stock_status
@@ -207,25 +157,14 @@ LEFT JOIN cast_size cs            ON cs.film_key = fs.film_key;
 COMMENT ON VIEW project_reporting.vw_product_performance IS
   'One row per film per store: rentals, late returns, revenue, stock utilization, sold-out days and a stock status label.';
 
-
--- ----------------------------------------------------------------------------
--- 3. vw_customer_analysis  (grain: one customer)
---
--- Totals are added up by customer_id, not customer_key, because a customer whose
--- details changed has more than one row in dim_customer (SCD Type 2). Location
--- columns show where the customer lives now (the current row).
---
--- value_segment splits customers into three equal groups by total spend:
---   High   = top third, Medium = middle third, Low = bottom third.
--- ----------------------------------------------------------------------------
-CREATE VIEW project_reporting.vw_customer_analysis AS
+CREATE VIEW project_reporting.vw_customer_analysis AS  --one row per customer
 WITH current_customer AS (
     SELECT customer_id, full_name, email, city, country, home_store_name, is_active
     FROM project_dw.dim_customer
-    WHERE is_current = 'Y' AND customer_key <> -1
+    WHERE is_current = 'Y' AND customer_key <> -1  --current details only
 ),
 rentals AS (
-    SELECT c.customer_id,
+    SELECT c.customer_id,  --rentals added up by customer_id because of scd2 versions
            SUM(r.rental_count) AS rentals,
            SUM(r.is_returned)  AS returned_rentals,
            SUM(r.is_late)      AS late_rentals,
@@ -237,7 +176,7 @@ rentals AS (
     GROUP BY c.customer_id
 ),
 payments AS (
-    SELECT c.customer_id,
+    SELECT c.customer_id,  --payments the same way
            COUNT(*)      AS payments,
            SUM(p.amount) AS total_spent
     FROM project_dw.fact_payment p
@@ -245,15 +184,14 @@ payments AS (
     GROUP BY c.customer_id
 ),
 favourite AS (
-    -- the category each customer rents most (ties broken alphabetically)
-    SELECT DISTINCT ON (c.customer_id)
+    SELECT DISTINCT ON (c.customer_id)  --most rented category for each customer
            c.customer_id,
            f.category_name AS favourite_category
     FROM project_dw.fact_rental r
     JOIN project_dw.dim_customer c ON r.customer_key = c.customer_key
     JOIN project_dw.dim_film f     ON r.film_key = f.film_key
     GROUP BY c.customer_id, f.category_name
-    ORDER BY c.customer_id, COUNT(*) DESC, f.category_name
+    ORDER BY c.customer_id, COUNT(*) DESC, f.category_name  --ties go alphabetical
 ),
 base AS (
     SELECT cc.customer_id,
@@ -276,11 +214,11 @@ base AS (
     LEFT JOIN payments p    ON p.customer_id = cc.customer_id
     LEFT JOIN favourite fav ON fav.customer_id = cc.customer_id
 )
-SELECT b.*,
+SELECT b.*,  --ratios and segments on top
        ROUND(100.0 * b.late_rentals / NULLIF(b.returned_rentals, 0), 1) AS late_pct,
        ROUND(b.total_spent / NULLIF(b.payments, 0), 2)                  AS avg_payment,
-       RANK() OVER (ORDER BY b.total_spent DESC)                        AS spend_rank,
-       CASE NTILE(3) OVER (ORDER BY b.total_spent DESC)
+       RANK() OVER (ORDER BY b.total_spent DESC)                        AS spend_rank,  --1 = biggest spender
+       CASE NTILE(3) OVER (ORDER BY b.total_spent DESC)  --split into 3 equal groups by spend
             WHEN 1 THEN 'High'
             WHEN 2 THEN 'Medium'
             ELSE 'Low'
@@ -290,11 +228,7 @@ FROM base b;
 COMMENT ON VIEW project_reporting.vw_customer_analysis IS
   'One row per customer (current details): rentals, late returns, total spent, favourite category, spend rank and High/Medium/Low value segment.';
 
-
--- ----------------------------------------------------------------------------
--- Quick check: row counts of the three views
--- ----------------------------------------------------------------------------
-SELECT 'vw_monthly_sales' AS view_name, COUNT(*) AS row_count FROM project_reporting.vw_monthly_sales
+SELECT 'vw_monthly_sales' AS view_name, COUNT(*) AS row_count FROM project_reporting.vw_monthly_sales  --quick row count check
 UNION ALL
 SELECT 'vw_product_performance', COUNT(*) FROM project_reporting.vw_product_performance
 UNION ALL

@@ -1,40 +1,14 @@
--- ============================================================================
--- DL3004 Movie Rental DW - Phase 3: Analytical SQL
--- Author : Zahra Saeed (Roll No: 24L-2512)
---
--- One query for each of the 14 business questions in our Business Questions
--- document, plus a summary of the headline KPIs. The queries use the star schema
--- in project_dw and the reporting views in project_reporting (run Views.sql first).
---
--- Techniques used: SUM / AVG / COUNT aggregation, GROUP BY, HAVING, CASE,
--- window functions (LAG, RANK, ROW_NUMBER), CTEs, and drill-across queries that
--- combine two fact tables through shared dimensions.
---
--- Works in pgAdmin's Query Tool (run one query at a time with F5 after
--- selecting it) or all at once with psql:
---   psql -U postgres -h localhost -d sakila_dw -f 05_Analytics/Analytical_Queries.sql
--- ============================================================================
-
-
--- ----------------------------------------------------------------------------
--- KPI summary: the headline numbers for the executive dashboard page
--- ----------------------------------------------------------------------------
-SELECT (SELECT SUM(amount) FROM project_dw.fact_payment)                           AS total_revenue,
+--Analytical_Queries.sql - answers to the 14 business questions, run Views.sql first (Zahra Saeed)
+SELECT (SELECT SUM(amount) FROM project_dw.fact_payment)                           AS total_revenue,  --kpis for the dashboard: revenue, rentals, customers
        (SELECT SUM(rental_count) FROM project_dw.fact_rental)                      AS total_rentals,
        (SELECT COUNT(*) FROM project_reporting.vw_customer_analysis)               AS total_customers,
        (SELECT ROUND(AVG(amount), 2) FROM project_dw.fact_payment)                 AS avg_payment,
        (SELECT ROUND(AVG(total_spent), 2)
           FROM project_reporting.vw_customer_analysis)                             AS avg_revenue_per_customer,
-       (SELECT ROUND(100.0 * SUM(is_late) / SUM(is_returned), 1)
+       (SELECT ROUND(100.0 * SUM(is_late) / SUM(is_returned), 1)  --late out of returned rentals
           FROM project_dw.fact_rental)                                             AS late_return_pct;
 
-
--- ----------------------------------------------------------------------------
--- Q1. Monthly rentals and revenue for each store, with month-on-month growth
---     (drill-across: rentals from fact_rental, revenue from fact_payment,
---      combined in vw_monthly_sales; growth uses the LAG window function)
--- ----------------------------------------------------------------------------
-SELECT month_label,
+SELECT month_label,  --Q1 monthly rentals and revenue per store with growth
        store_name,
        rentals,
        revenue,
@@ -43,36 +17,27 @@ SELECT month_label,
 FROM project_reporting.vw_monthly_sales
 ORDER BY store_id, year_month;
 
--- Q1b. Both stores together, month by month, with growth
-SELECT year_month,
+SELECT year_month,  --Q1b both stores together
        SUM(rentals)                                   AS rentals,
        SUM(revenue)                                   AS revenue,
-       LAG(SUM(revenue)) OVER (ORDER BY year_month)   AS prev_month_revenue,
+       LAG(SUM(revenue)) OVER (ORDER BY year_month)   AS prev_month_revenue,  --last month's revenue
        ROUND(100.0 * (SUM(revenue) - LAG(SUM(revenue)) OVER (ORDER BY year_month))
              / NULLIF(LAG(SUM(revenue)) OVER (ORDER BY year_month), 0), 1) AS revenue_growth_pct
 FROM project_reporting.vw_monthly_sales
 GROUP BY year_month
 ORDER BY year_month;
 
-
--- ----------------------------------------------------------------------------
--- Q2. Which film categories bring in the most revenue?
--- ----------------------------------------------------------------------------
-SELECT f.category_name,
+SELECT f.category_name,  --Q2 revenue by category
        SUM(p.amount)                                          AS revenue,
        COUNT(*)                                               AS payments,
-       ROUND(100.0 * SUM(p.amount) / SUM(SUM(p.amount)) OVER (), 1) AS share_of_revenue_pct,
-       RANK() OVER (ORDER BY SUM(p.amount) DESC)              AS revenue_rank
+       ROUND(100.0 * SUM(p.amount) / SUM(SUM(p.amount)) OVER (), 1) AS share_of_revenue_pct,  --share of total revenue
+       RANK() OVER (ORDER BY SUM(p.amount) DESC)              AS revenue_rank  --1 = top category
 FROM project_dw.fact_payment p
 JOIN project_dw.dim_film f ON p.film_key = f.film_key
 GROUP BY f.category_name
 ORDER BY revenue DESC;
 
-
--- ----------------------------------------------------------------------------
--- Q3. The 20 most rented films, and films that are never rented
--- ----------------------------------------------------------------------------
-SELECT f.title,
+SELECT f.title,  --Q3 top 20 most rented films
        f.category_name,
        SUM(r.rental_count) AS rentals
 FROM project_dw.fact_rental r
@@ -81,25 +46,18 @@ GROUP BY f.title, f.category_name
 ORDER BY rentals DESC, f.title
 LIMIT 20;
 
--- Q3b. Films with copies on the shelf that were never rented
-SELECT DISTINCT title, category_name
+SELECT DISTINCT title, category_name  --Q3b stocked films that were never rented (comes back empty)
 FROM project_reporting.vw_product_performance
 WHERE copies_owned > 0
 GROUP BY title, category_name
 HAVING SUM(rentals) = 0;
 
--- Q3c. Films with no copies at any store (cannot be rented at all)
-SELECT title, category_name, rating
+SELECT title, category_name, rating  --Q3c films with no copies at all
 FROM project_reporting.vw_product_performance
 WHERE stock_status = 'Not stocked'
 ORDER BY title;
 
-
--- ----------------------------------------------------------------------------
--- Q4. Top 10 customers by total amount spent
---     (grouped by customer_id, so a customer with several SCD2 rows is counted once)
--- ----------------------------------------------------------------------------
-SELECT spend_rank,
+SELECT spend_rank,  --Q4 top 10 customers by spend
        full_name,
        city,
        country,
@@ -110,12 +68,7 @@ FROM project_reporting.vw_customer_analysis
 ORDER BY spend_rank, full_name
 LIMIT 10;
 
-
--- ----------------------------------------------------------------------------
--- Q5. Countries and cities with the most customers and revenue
---     (where customers live now)
--- ----------------------------------------------------------------------------
-SELECT country,
+SELECT country,  --Q5 countries with the most customers and revenue (current address)
        COUNT(*)          AS customers,
        SUM(total_spent)  AS revenue,
        ROUND(AVG(total_spent), 2) AS avg_spent_per_customer
@@ -124,7 +77,7 @@ GROUP BY country
 ORDER BY revenue DESC
 LIMIT 10;
 
-SELECT city,
+SELECT city,  --Q5b same by city
        country,
        COUNT(*)         AS customers,
        SUM(total_spent) AS revenue
@@ -133,20 +86,15 @@ GROUP BY city, country
 ORDER BY revenue DESC
 LIMIT 10;
 
-
--- ----------------------------------------------------------------------------
--- Q6. Percentage of returned rentals that came back late, by category and by store
---     (late % = late rentals / returned rentals; unreturned films are not counted)
--- ----------------------------------------------------------------------------
-SELECT category_name,
+SELECT category_name,  --Q6 late returns by category
        SUM(returned_rentals) AS returned_rentals,
        SUM(late_rentals)     AS late_rentals,
-       ROUND(100.0 * SUM(late_rentals) / NULLIF(SUM(returned_rentals), 0), 1) AS late_pct
+       ROUND(100.0 * SUM(late_rentals) / NULLIF(SUM(returned_rentals), 0), 1) AS late_pct  --late out of returned, not out of all
 FROM project_reporting.vw_product_performance
 GROUP BY category_name
 ORDER BY late_pct DESC;
 
-SELECT store_name,
+SELECT store_name,  --Q6b late returns by store
        SUM(returned_rentals) AS returned_rentals,
        SUM(late_rentals)     AS late_rentals,
        ROUND(100.0 * SUM(late_rentals) / NULLIF(SUM(returned_rentals), 0), 1) AS late_pct
@@ -155,8 +103,7 @@ WHERE store_id IS NOT NULL
 GROUP BY store_name
 ORDER BY store_name;
 
--- Q6b. Late rate by allowed rental period: is the short loan period the cause?
-SELECT f.allowed_rental_days,
+SELECT f.allowed_rental_days,  --Q6c late rate by loan period, this is where the real cause shows
        SUM(r.is_returned) AS returned_rentals,
        ROUND(100.0 * SUM(r.is_late) / NULLIF(SUM(r.is_returned), 0), 1) AS late_pct,
        ROUND(AVG(r.days_rented), 1) AS avg_days_kept
@@ -165,11 +112,7 @@ JOIN project_dw.dim_film f ON r.film_key = f.film_key
 GROUP BY f.allowed_rental_days
 ORDER BY f.allowed_rental_days;
 
-
--- ----------------------------------------------------------------------------
--- Q7. Overstocked films: many copies but rarely rented out
--- ----------------------------------------------------------------------------
-SELECT title,
+SELECT title,  --Q7 overstocked films
        store_name,
        copies_owned,
        rentals,
@@ -179,8 +122,7 @@ WHERE stock_status = 'Overstocked'
 ORDER BY utilization_pct, title
 LIMIT 15;
 
--- Q7b. How many film-store pairs fall into each stock status
-SELECT stock_status,
+SELECT stock_status,  --Q7b how many films fall in each stock status
        COUNT(*)            AS film_store_pairs,
        SUM(copies_owned)   AS copies,
        SUM(rentals)        AS rentals
@@ -188,11 +130,7 @@ FROM project_reporting.vw_product_performance
 GROUP BY stock_status
 ORDER BY stock_status;
 
-
--- ----------------------------------------------------------------------------
--- Q8. Understocked films: often no copies left on the shelf
--- ----------------------------------------------------------------------------
-SELECT title,
+SELECT title,  --Q8 understocked films
        store_name,
        copies_owned,
        sold_out_days,
@@ -203,8 +141,7 @@ WHERE stock_status = 'Understocked'
 ORDER BY sold_out_pct DESC, title
 LIMIT 15;
 
--- Q8b. Sold-out rate by number of copies held
-SELECT copies_owned,
+SELECT copies_owned,  --Q8b sold out days by number of copies
        COUNT(*) AS film_store_pairs,
        ROUND(100.0 * SUM(sold_out_days) / SUM(days_tracked), 1) AS sold_out_pct,
        ROUND(100.0 * SUM(total_copies_rented_out) / SUM(total_copies_owned), 1) AS utilization_pct
@@ -213,15 +150,7 @@ WHERE copies_owned > 0
 GROUP BY copies_owned
 ORDER BY copies_owned;
 
-
--- ----------------------------------------------------------------------------
--- Q9. Are weekends busier than weekdays?
---     (compare the average per day, because there are 5 weekdays and only 2 weekend days)
---     Note: Sakila only has rentals on 41 days, recorded in blocks of consecutive
---     days. Several blocks start or end on a Tuesday with very few rentals, which
---     pulls the Tuesday (and so the weekday) average down. See Q9b.
--- ----------------------------------------------------------------------------
-SELECT CASE d.is_weekend WHEN 'Y' THEN 'Weekend' ELSE 'Weekday' END AS day_type,
+SELECT CASE d.is_weekend WHEN 'Y' THEN 'Weekend' ELSE 'Weekday' END AS day_type,  --Q9 weekend vs weekday, average per day not total
        SUM(r.rental_count)            AS rentals,
        COUNT(DISTINCT d.date_key)     AS days_with_rentals,
        ROUND(1.0 * SUM(r.rental_count) / COUNT(DISTINCT d.date_key), 1) AS avg_rentals_per_day
@@ -230,8 +159,7 @@ JOIN project_dw.dim_date d ON r.rental_date_key = d.date_key
 GROUP BY d.is_weekend
 ORDER BY day_type;
 
--- Q9b. The same by day of the week
-SELECT d.day_of_week,
+SELECT d.day_of_week,  --Q9b by day of the week
        d.day_name,
        SUM(r.rental_count)        AS rentals,
        COUNT(DISTINCT d.date_key) AS days_with_rentals,
@@ -241,12 +169,7 @@ JOIN project_dw.dim_date d ON r.rental_date_key = d.date_key
 GROUP BY d.day_of_week, d.day_name
 ORDER BY d.day_of_week;
 
-
--- ----------------------------------------------------------------------------
--- Q10. Staff workload: rentals and payments handled by each staff member
---      (drill-across: each fact is summarised by staff first, then joined)
--- ----------------------------------------------------------------------------
-WITH r AS (
+WITH r AS (  --Q10 staff workload, rentals and payments summed separately first
     SELECT staff_key, SUM(rental_count) AS rentals
     FROM project_dw.fact_rental
     GROUP BY staff_key
@@ -261,18 +184,13 @@ SELECT st.full_name,
        r.rentals,
        p.payments,
        p.amount_taken,
-       ROUND(100.0 * r.rentals / SUM(r.rentals) OVER (), 1) AS share_of_rentals_pct
+       ROUND(100.0 * r.rentals / SUM(r.rentals) OVER (), 1) AS share_of_rentals_pct  --share of all rentals
 FROM project_dw.dim_staff st
 JOIN r ON r.staff_key = st.staff_key
 JOIN p ON p.staff_key = st.staff_key
 ORDER BY st.full_name;
 
-
--- ----------------------------------------------------------------------------
--- Q11. Does the film rating affect rentals and revenue?
---      (divided by the number of films, since some ratings have more films)
--- ----------------------------------------------------------------------------
-SELECT rating,
+SELECT rating,  --Q11 does rating matter, per film so bigger ratings dont win just by size
        COUNT(DISTINCT film_id) AS films,
        SUM(rentals)            AS rentals,
        SUM(revenue)            AS revenue,
@@ -282,14 +200,9 @@ FROM project_reporting.vw_product_performance
 GROUP BY rating
 ORDER BY revenue_per_film DESC;
 
-
--- ----------------------------------------------------------------------------
--- Q12. Actors in the most films, and whether their films rent more than average
---      (uses the factless fact table fact_film_cast)
--- ----------------------------------------------------------------------------
-WITH film_rentals AS (
+WITH film_rentals AS (  --Q12 actors in the most films vs the average film
     SELECT f.film_key,
-           COALESCE(SUM(r.rental_count), 0) AS rentals
+           COALESCE(SUM(r.rental_count), 0) AS rentals  --films with 0 rentals count too
     FROM project_dw.dim_film f
     LEFT JOIN project_dw.fact_rental r ON r.film_key = f.film_key
     WHERE f.film_key <> -1
@@ -307,13 +220,12 @@ SELECT a.full_name,
 FROM project_dw.fact_film_cast fc
 JOIN project_dw.dim_actor a ON fc.actor_key = a.actor_key
 JOIN film_rentals fr        ON fc.film_key = fr.film_key
-CROSS JOIN overall o
+CROSS JOIN overall o  --same average on every row
 GROUP BY a.actor_key, a.full_name, o.avg_rentals_per_film
 ORDER BY films DESC, a.full_name
 LIMIT 10;
 
--- Q12b. Actors whose films are rented the most on average (at least 20 films)
-WITH film_rentals AS (
+WITH film_rentals AS (  --Q12b actors whose films rent the most (20+ films)
     SELECT f.film_key, COALESCE(SUM(r.rental_count), 0) AS rentals
     FROM project_dw.dim_film f
     LEFT JOIN project_dw.fact_rental r ON r.film_key = f.film_key
@@ -331,23 +243,16 @@ HAVING COUNT(*) >= 20
 ORDER BY avg_rentals_per_film DESC
 LIMIT 10;
 
-
--- ----------------------------------------------------------------------------
--- Q13. Revenue by city using where the customer lived ON THE PAYMENT DATE
---      A direct join on customer_key gives the customer version that was valid
---      when the payment was made (SCD Type 2). Compare with Q5 (current city).
--- ----------------------------------------------------------------------------
-SELECT c.country,
+SELECT c.country,  --Q13 revenue by where the customer lived when they paid (scd2)
        c.city,
        SUM(p.amount) AS revenue_at_time_of_payment
 FROM project_dw.fact_payment p
-JOIN project_dw.dim_customer c ON p.customer_key = c.customer_key
+JOIN project_dw.dim_customer c ON p.customer_key = c.customer_key  --direct key join gives the old version
 GROUP BY c.country, c.city
 ORDER BY revenue_at_time_of_payment DESC
 LIMIT 10;
 
--- Q13b. Where the two methods give different answers (cities affected by a move)
-WITH historical AS (
+WITH historical AS (  --Q13b where that differs from the current city
     SELECT c.city, c.country, SUM(p.amount) AS revenue
     FROM project_dw.fact_payment p
     JOIN project_dw.dim_customer c ON p.customer_key = c.customer_key
@@ -364,29 +269,24 @@ SELECT COALESCE(h.city, cc.city)       AS city,
        COALESCE(cc.revenue, 0)         AS revenue_by_current_city,
        COALESCE(h.revenue, 0) - COALESCE(cc.revenue, 0) AS difference
 FROM historical h
-FULL OUTER JOIN current_city cc ON h.city = cc.city AND h.country = cc.country
+FULL OUTER JOIN current_city cc ON h.city = cc.city AND h.country = cc.country  --full join so cities on either side show up
 WHERE COALESCE(h.revenue, 0) <> COALESCE(cc.revenue, 0)
 ORDER BY city;
 
-
--- ----------------------------------------------------------------------------
--- Q14. Customer value segments: how many customers in each, and their revenue
--- ----------------------------------------------------------------------------
-SELECT value_segment,
+SELECT value_segment,  --Q14 high / medium / low value customers
        COUNT(*)                          AS customers,
        MIN(total_spent)                  AS min_spent,
        MAX(total_spent)                  AS max_spent,
        ROUND(AVG(total_spent), 2)        AS avg_spent,
        ROUND(AVG(rentals), 1)            AS avg_rentals,
        SUM(total_spent)                  AS revenue,
-       ROUND(100.0 * SUM(total_spent) / SUM(SUM(total_spent)) OVER (), 1) AS share_of_revenue_pct,
+       ROUND(100.0 * SUM(total_spent) / SUM(SUM(total_spent)) OVER (), 1) AS share_of_revenue_pct,  --share of total revenue
        ROUND(100.0 * SUM(late_rentals) / NULLIF(SUM(returned_rentals), 0), 1) AS late_pct
 FROM project_reporting.vw_customer_analysis
 GROUP BY value_segment
 ORDER BY avg_spent DESC;
 
--- Q14b. Favourite category of the High value customers
-SELECT favourite_category,
+SELECT favourite_category,  --Q14b favourite categories of high value customers
        COUNT(*) AS high_value_customers
 FROM project_reporting.vw_customer_analysis
 WHERE value_segment = 'High'
